@@ -1,12 +1,22 @@
-# Handoff Document: Dumavena-Next Deployment to Coolify/Hetzner
+# Handoff Document: Dumavena-Next Deployment & Coolify Migration
 
 > **Purpose:** This document is for a fresh Devin session opened in the
 > `/Users/knez/Documents/WebDev/dumavena/dumavena-next` project directory. It
-> contains everything that session needs to: (1) enhance the local project with
-> AI tooling (MCP servers, skills, AGENTS.md), (2) deploy the site to the
-> existing Coolify instance on the Hetzner VPS, and (3) transfer the
-> `dumavena.com` domain from DigitalOcean to Hetzner so the new Next.js site
-> goes live.
+> contains everything that session needs to:
+>
+> 1. Enhance the local project with AI tooling (MCP servers, skills, AGENTS.md)
+> 2. Prepare the project for Docker deployment
+> 3. Migrate the `dumavena.com` domain from DigitalOcean to the Hetzner VPS
+> 4. Deploy the dumavena-next site to Coolify
+> 5. Migrate the Coolify dashboard from `admin.vectormatch.dev` to
+>    `admin.dumavena.com` (making it domain-agnostic, bound to the primary
+>    identity domain rather than a specific app domain)
+> 6. Verify both `vectormatch.dev` and `dumavena.com` are live and healthy
+>
+> **Critical constraint:** Both `vectormatch.dev` (existing app) and
+> `dumavena.com` (new app) must be live and healthy when the transition is
+> complete. The ordering of phases is designed to guarantee zero downtime for
+> either domain.
 
 ---
 
@@ -14,18 +24,23 @@
 
 1. [Project Context](#1-project-context)
 2. [Infrastructure Summary](#2-infrastructure-summary)
-3. [Phase 1: Local AI Enhancement Setup](#phase-1-local-ai-enhancement-setup)
-4. [Phase 2: Prepare dumavena-next for Docker Deployment](#phase-2-prepare-dumavena-next-for-docker-deployment)
-5. [Phase 3: Deploy to Coolify](#phase-3-deploy-to-coolify)
-6. [Phase 4: Domain Transfer from DigitalOcean to Hetzner](#phase-4-domain-transfer-from-digitalocean-to-hetzner)
-7. [Phase 5: Post-Deployment Verification](#phase-5-post-deployment-verification)
-8. [Reference: VectorMatch Coolify Application Config](#reference-vectormatch-coolify-application-config)
+3. [Architecture: How Coolify & Traefik Route Domains](#3-architecture-how-coolify--traefik-route-domains)
+4. [Phase 1: Local AI Enhancement Setup](#phase-1-local-ai-enhancement-setup)
+5. [Phase 2: Prepare dumavena-next for Docker Deployment](#phase-2-prepare-dumavena-next-for-docker-deployment)
+6. [Phase 3: Migrate dumavena.com DNS to Hetzner](#phase-3-migrate-dumavenacom-dns-to-hetzner)
+7. [Phase 4: Deploy dumavena-next to Coolify](#phase-4-deploy-dumavena-next-to-coolify)
+8. [Phase 5: Migrate Coolify Dashboard to admin.dumavena.com](#phase-5-migrate-coolify-dashboard-to-admindumavenacom)
+9. [Phase 6: Post-Deployment Verification](#phase-6-post-deployment-verification)
+10. [Phase 7: Resend Domain Verification & Cleanup](#phase-7-resend-domain-verification--cleanup)
+11. [Appendix A: Reference Configs](#appendix-a-reference-configs)
+12. [Appendix B: Quick Command Reference](#appendix-b-quick-command-reference)
+13. [Appendix C: Troubleshooting](#appendix-c-troubleshooting)
 
 ---
 
 ## 1. Project Context
 
-**Dumavena-Next** is a portfolio website for Dumavena LLC (Dusan Knezevic's
+**Dumavena-Next** is the portfolio website for Dumavena LLC (Dusan Knezevic's
 web-dev portfolio), rebuilt from Laravel/Blade into Next.js 16. It is a
 **simple static-dynamic hybrid site** — no database, no authentication, no
 background jobs. The only dynamic feature is a contact form that sends email
@@ -49,8 +64,9 @@ via Resend.
 - **URL:** https://github.com/knezdusan/dumavena-next
 - **Branch:** `main`
 - **Remote:** `origin` → `https://github.com/knezdusan/dumavena-next.git`
+- **Latest commit:** `319ae9e` (Readme file update)
 
-### What the site contains
+### Pages
 
 | Route | Purpose |
 |---|---|
@@ -81,55 +97,156 @@ via Resend.
 | Property | Value |
 |---|---|
 | **Server name** | `vector-match-CX33` |
-| **Public IP** | `157.180.68.189` |
+| **Public IPv4** | `157.180.68.189` |
+| **Public IPv6** | `2a01:4f9:c013:2d1f::1` |
 | **SSH alias** | `vectormatch-vps` (configured in `~/.ssh/config`) |
 | **SSH user** | `root` (key-based auth via `~/.ssh/id_ed25519`) |
-| **OS** | Linux (Debian/Ubuntu-based) |
 | **Coolify version** | 4.1.2 |
 | **Proxy** | Traefik v3.6.21 (managed by Coolify) |
-| **Coolify dashboard** | `https://admin.vectormatch.dev` |
-| **Coolify MCP endpoint** | `https://admin.vectormatch.dev/mcp` |
+| **Coolify dashboard (current)** | `https://admin.vectormatch.dev` |
+| **Coolify dashboard (target)** | `https://admin.dumavena.com` |
+| **Coolify MCP endpoint (current)** | `https://admin.vectormatch.dev/mcp` |
+| **Coolify MCP token** | `1\|CjgLBfyxjp8dDxmtT6Rkjyl3YBGFsFZNNpWAraVcfd8e9e21` |
 
-### Current DNS state
+### SSH config (~/.ssh/config)
 
-| Domain | NS | A Record | Points to | Status |
+```
+Host vectormatch-vps
+    HostName 157.180.68.189
+    User root
+    IdentityFile ~/.ssh/id_ed25519
+    LocalForward 15432 10.0.1.10:5432
+```
+
+### Current DNS state (as of Sep 3 2026)
+
+| Domain | Nameservers | A Record | Points to | Status |
 |---|---|---|---|---|
 | `vectormatch.dev` | Cloudflare (`lou.ns.cloudflare.com`, `aitana.ns.cloudflare.com`) | Cloudflare proxy IPs | Hetzner VPS (157.180.68.189) | **Live, proxied through Cloudflare** |
 | `admin.vectormatch.dev` | Cloudflare | Cloudflare proxy IPs | Hetzner VPS (Coolify dashboard) | **Live, proxied through Cloudflare** |
 | `dumavena.com` | DigitalOcean (`ns1/2/3.digitalocean.com`) | `157.245.210.218` | DigitalOcean droplet (old Laravel) | **Live on DigitalOcean, to be migrated** |
+| `www.dumavena.com` | DigitalOcean | `157.245.210.218` | DigitalOcean droplet | **Live on DigitalOcean** |
 
 ### Coolify current state
 
-- **1 server:** `localhost` (the Hetzner VPS itself — Coolify runs on the same host)
+- **1 server:** `localhost` (uuid: `lqct1x9er0irqivojvwzp1p8`) — the Hetzner
+  VPS itself; Coolify runs on the same host
 - **1 project:** `VectorMatch` (uuid: `auf5w48fd3wriug75oei3d8o`)
-- **1 application:** `vectormatch:main` (running:healthy, FQDN: `https://vectormatch.dev`)
+- **1 application:** `vectormatch:main` (uuid:
+  `o13urtthlj1q3md70gqeuca2`, running:healthy, FQDN: `https://vectormatch.dev`)
 - **3 services:** flaresolverr, filebrowser, wordpress+mariadb
-- **1 database:** PostgreSQL (container `z10g6zz09soe0ddwgpizteq2`, for VectorMatch)
-- **1 Redis:** (container `fynhnv9ws1q1kkk9ufy9d71p`, for VectorMatch rate limiting)
+- **1 database:** PostgreSQL (container `z10g6zz09soe0ddwgpizteq2`, for
+  VectorMatch, port 25432 external)
+- **1 Redis:** (container `fynhnv9ws1q1kkk9ufy9d71p`, for VectorMatch rate
+  limiting)
 
 ### Running containers on the VPS (as of Sep 3 2026)
 
 ```
-coolify-proxy          — Traefik v3.6, ports 80/443/8080
-coolify                — Coolify dashboard, port 8000
-coolify-realtime       — WebSocket server, ports 6001-6002
-coolify-redis          — Coolify's internal Redis
-coolify-db             — Coolify's internal PostgreSQL
-coolify-sentinel       — Monitoring agent
-o13urtthlj1q3md70gqeuca2 — VectorMatch Next.js app (port 3000 internal)
-z10g6zz09soe0ddwgpizteq2 — VectorMatch PostgreSQL (port 25432 external)
-fynhnv9ws1q1kkk9ufy9d71p — VectorMatch Redis
-flaresolverr           — Cloudflare bypass (port 8191)
-filebrowser            — File manager (port 80 internal)
-wordpress + mariadb    — WordPress site
+coolify-proxy              — Traefik v3.6, ports 80/443/8080 (the reverse proxy)
+coolify                    — Coolify dashboard, port 8000→8080
+coolify-realtime           — WebSocket server, ports 6001-6002
+coolify-redis              — Coolify's internal Redis
+coolify-db                 — Coolify's internal PostgreSQL
+coolify-sentinel           — Monitoring agent
+o13urtthlj1q3md70gqeuca2   — VectorMatch Next.js app (port 3000 internal)
+z10g6zz09soe0ddwgpizteq2   — VectorMatch PostgreSQL (port 25432 external)
+fynhnv9ws1q1kkk9ufy9d71p   — VectorMatch Redis
+flaresolverr               — Cloudflare bypass (port 8191)
+filebrowser                — File manager (port 80 internal)
+wordpress + mariadb        — WordPress site
 ```
 
 ### Key takeaway
 
 The Hetzner VPS already runs Coolify with Traefik handling SSL/TLS via
 Let's Encrypt (HTTP-01 challenge). Adding a new application is straightforward
-— Coolify will configure Traefik automatically to route the new domain and
+— Coolify configures Traefik automatically to route the new domain and
 provision certificates. **No manual Traefik or nginx configuration is needed.**
+
+---
+
+## 3. Architecture: How Coolify & Traefik Route Domains
+
+Understanding this architecture is essential for the migration. The key
+insight is that **the Coolify dashboard FQDN and application FQDNs are
+completely independent** — changing one does not affect the other.
+
+### Two separate routing mechanisms
+
+#### A. Coolify Dashboard routing (dynamic config file)
+
+The Coolify dashboard itself is routed via a **Traefik dynamic config file**
+at `/data/coolify/proxy/dynamic/coolify.yaml`. This file is auto-generated by
+Coolify based on the `instance_settings.fqdn` value in the Coolify database.
+
+Current content (key excerpt):
+```yaml
+http:
+  routers:
+    coolify-http:
+      rule: Host(`admin.vectormatch.dev`)
+      service: coolify
+    coolify-https:
+      rule: Host(`admin.vectormatch.dev`)
+      service: coolify
+      tls:
+        certresolver: letsencrypt
+  services:
+    coolify:
+      loadBalancer:
+        servers:
+          - url: 'http://coolify:8080'
+```
+
+When you change the FQDN in the Coolify dashboard settings, Coolify
+**regenerates this file** with the new domain and Traefik picks it up
+automatically (file watcher).
+
+#### B. Application routing (Docker container labels)
+
+Each application deployed by Coolify gets Traefik routing via **Docker labels**
+on its container. These are generated from the `applications.fqdn` column in
+the database. Example (VectorMatch):
+
+```yaml
+labels:
+  - traefik.http.routers.https-0-o13urtthlj1q3md70gqeuca2.rule=Host(`vectormatch.dev`)
+  - traefik.http.routers.https-0-o13urtthlj1q3md70gqeuca2.tls.certresolver=letsencrypt
+```
+
+These labels live on the container, **not** in the dynamic config file. They
+are completely independent of the Coolify dashboard FQDN.
+
+### What this means for the migration
+
+| Action | Affects dashboard? | Affects vectormatch.dev? | Affects dumavena.com? |
+|---|---|---|---|
+| Change `instance_settings.fqdn` | Yes (regenerates coolify.yaml) | No (container labels unchanged) | No (container labels unchanged) |
+| Deploy dumavena-next app | No | No | Yes (new container with new labels) |
+| Change DNS for dumavena.com | No | No | Yes (traffic routes to VPS) |
+
+**The migration is safe:** changing the Coolify dashboard FQDN from
+`admin.vectormatch.dev` to `admin.dumavena.com` only rewrites the dashboard
+routing file. The VectorMatch app's container labels are untouched, so
+`vectormatch.dev` continues serving without interruption.
+
+### Where `admin.vectormatch.dev` is referenced (full inventory)
+
+This is the complete list of places the old dashboard URL appears, verified
+by searching the VPS filesystem and Coolify database on Sep 3 2026:
+
+| # | Location | What it does | Auto-updated when FQDN changes? |
+|---|---|---|---|
+| 1 | `instance_settings.fqdn` (Coolify DB) | Source of truth for dashboard URL | **You change this in dashboard Settings** |
+| 2 | `/data/coolify/proxy/dynamic/coolify.yaml` | Traefik routing rules for dashboard | **Auto-regenerated** by Coolify |
+| 3 | `/data/coolify/proxy/acme.json` | Let's Encrypt SSL cert for old domain | **New cert auto-provisioned** for new domain |
+| 4 | `COOLIFY_BASE_URL` env var on VectorMatch app | App→Coolify API callbacks (webhooks, notifications) | **Auto-updated** by Coolify |
+| 5 | `vectormatch/.devin/mcp_config.local.json` (local Mac) | Devin MCP client config for VectorMatch project | **Manual update** (1 line) |
+| 6 | `~/.config/devin/mcp_config.json` (global Devin config) | Global Devin MCP client config | **Manual update** (1 line) |
+
+Items 1-4 are handled automatically by Coolify. Only items 5-6 require
+manual updates on the local Mac (one line each).
 
 ---
 
@@ -142,9 +259,10 @@ resources and latest documentation, the following enhancements are needed.
 ### 1.1 Create `.devin/` directory and MCP config
 
 The `.devin/` directory is already in `.gitignore` (line: `.devin/`), so it
-won't be committed. Create the MCP configuration file:
+won't be committed. Create the MCP configuration files:
 
-**File: `.devin/mcp_config.json`**
+**File: `.devin/mcp_config.json`** (template with placeholders — safe to
+commit, but `.devin/` is gitignored anyway)
 
 ```json
 {
@@ -170,12 +288,16 @@ won't be committed. Create the MCP configuration file:
 }
 ```
 
-**File: `.devin/mcp_config.local.json`** (contains real secrets — already
-gitignored via `.devin/`)
+**File: `.devin/mcp_config.local.json`** (contains real secrets — gitignored
+via `.devin/`)
+
+> **IMPORTANT:** The Coolify MCP URL below uses `admin.vectormatch.dev`
+> initially. After Phase 5 (Coolify dashboard migration), this must be updated
+> to `admin.dumavena.com`. See Phase 5 Step 5 for the update.
 
 ```json
 {
-  "mCPServers": {
+  "mcpServers": {
     "coolify": {
       "url": "https://admin.vectormatch.dev/mcp",
       "transport": "http",
@@ -187,10 +309,8 @@ gitignored via `.devin/`)
 }
 ```
 
-> **Note:** The `mcp_config.local.json` overrides the `${COOLIFY_BASE_URL}`
-> and `${COOLIFY_MCP_TOKEN}` placeholders from `mcp_config.json` with the
-> actual Coolify MCP endpoint and token. This token is the same one used by
-> the VectorMatch project — it's a team-level Coolify API token.
+> **Note:** The MCP token (`1|CjgLBfyxjp8d...`) is tied to the Coolify
+> instance, not the URL. It remains valid after the dashboard domain changes.
 
 **File: `.devin/config.json`**
 
@@ -219,6 +339,9 @@ relevant to dumavena-next. Copy them into `.devin/skills/`:
 #### From VectorMatch (project-level skills to copy)
 
 ```bash
+# Create the skills directory
+mkdir -p .devin/skills
+
 # These skills live in the VectorMatch project and are directly relevant:
 cp -r /Users/knez/Documents/WebDev/vectormatch/.devin/skills/next-best-practices \
       .devin/skills/
@@ -234,7 +357,8 @@ cp -r /Users/knez/Documents/WebDev/vectormatch/.devin/skills/fallow \
       .devin/skills/
 ```
 
-#### Already available globally (no action needed — Devin loads these automatically)
+#### Already available globally (no action needed — Devin loads these
+automatically)
 
 These skills are in `~/.agents/skills/` and `~/.codeium/windsurf/skills/` and
 are available to all projects:
@@ -335,7 +459,8 @@ confirmation. This includes:
 - **Build pack:** Dockerfile (see `Dockerfile` in repo root)
 - **Port:** 3000
 - **Domain:** `https://dumavena.com`
-- **Coolify dashboard:** `https://admin.vectormatch.dev`
+- **Coolify dashboard:** `https://admin.dumavena.com` (after Phase 5 migration;
+  initially `https://admin.vectormatch.dev`)
 - **Coolify MCP:** Available via `.devin/mcp_config.local.json` for read-only
   infrastructure queries (list applications, check status, etc.)
 
@@ -377,7 +502,7 @@ After creating the files, the Devin agent in the new session should:
 2. **Confirm skills are discoverable** — run `skill list` to see all available
    skills.
 3. **Test Coolify MCP connectivity** — call `get_infrastructure_overview` to
-   verify the agent can see the Coolify setup.
+   verify the agent can see the Coolify setup (1 server, 1 project, 1 app).
 
 ---
 
@@ -573,137 +698,51 @@ After verifying the build, the user should commit and push the new files
 (`Dockerfile`, `.dockerignore`, updated `next.config.ts`) to GitHub. **The
 Devin agent must NOT run git commands** — remind the user to do this manually.
 
----
-
-## Phase 3: Deploy to Coolify
-
-### 3.1 Create a new Coolify project (optional but recommended)
-
-For cleanliness, create a separate Coolify project for Dumavena (rather than
-adding it to the VectorMatch project). This can be done via the Coolify
-dashboard at `https://admin.vectormatch.dev`:
-
-1. Log in to `https://admin.vectormatch.dev`
-2. Click **"New Project"** → Name it **"Dumavena"** → Create
-
-Alternatively, the Dumavena app can be added to the existing "VectorMatch"
-project. The choice is organizational — Coolify projects are just groupings.
-
-### 3.2 Create a new application in Coolify
-
-1. In the Coolify dashboard, go to the project (new "Dumavena" or existing
-   "VectorMatch")
-2. Click **"New Resource"** → **"Dockerfile"** (or "GitHub Repository" if
-   Coolify has GitHub integration set up)
-3. **If using GitHub integration:**
-   - Select repository: `knezdusan/dumavena-next`
-   - Branch: `main`
-   - Build Pack: **Dockerfile**
-   - Dockerfile location: `/Dockerfile`
-   - Port exposes: `3000`
-4. **If using manual Dockerfile:**
-   - Connect the GitHub repo or paste the Dockerfile content
-   - Set the same settings as above
-
-### 3.3 Configure the application
-
-Set the following in the Coolify application settings:
-
-| Setting | Value |
-|---|---|
-| **Name** | `dumavena:main` (or similar) |
-| **FQDN** | `https://dumavena.com` |
-| **Build Pack** | `Dockerfile` |
-| **Dockerfile location** | `/Dockerfile` |
-| **Port exposes** | `3000` |
-| **Base directory** | `/` |
-| **Health check path** | `/` |
-| **Health check port** | `3000` |
-| **Health check method** | `GET` |
-| **Health check return code** | `200` |
-| **Health check scheme** | `http` |
-| **Health check enabled** | `true` |
-| **Redirect** | `both` (HTTP → HTTPS, www → non-www or vice versa) |
-
-### 3.4 Set environment variables in Coolify
-
-In the Coolify application's **"Environment Variables"** tab, add:
-
+The user should run:
+```bash
+git add Dockerfile .dockerignore next.config.ts
+git commit -m "Add Dockerfile and standalone output for Coolify deployment"
+git push origin main
 ```
-RESEND_API_KEY=<the actual key from the local .env file>
-CONTACT_FROM_EMAIL=Dumavena <noreply@dumavena.com>
-CONTACT_TO_EMAIL=info@dumavena.com
-```
-
-> **Note on `CONTACT_FROM_EMAIL`:** If `dumavena.com` is not yet verified in
-> Resend, use the testing sender: `Dumavena <onboarding@resend.dev>`. After
-> the domain is verified in Resend (see Phase 4), switch to
-> `Dumavena <noreply@dumavena.com>`.
-
-### 3.5 Deploy
-
-1. Click **"Deploy"** in the Coolify dashboard
-2. Watch the build logs — the Docker build should complete in 1-3 minutes
-3. Once deployed, Coolify's Traefik proxy will automatically:
-   - Route `dumavena.com` traffic to the container on port 3000
-   - Provision a Let's Encrypt SSL certificate (via HTTP-01 challenge)
-4. The health check should pass within 30 seconds
-
-> **Important:** At this point, the site is live on Coolify but only accessible
-> via the Hetzner VPS IP directly (e.g., `http://157.180.68.189:3000` if port
-> mapping is exposed, or via the Coolify preview URL). The domain won't resolve
-> to the Hetzner VPS until the DNS is updated in Phase 4.
-
-### 3.6 Verify via Coolify MCP
-
-The Devin agent can verify the deployment status using the Coolify MCP server:
-
-```
-# List all applications to find the new dumavena app
-mcp_call_tool("coolify", "list_applications", {})
-
-# Get details of the new application (use the UUID from the list)
-mcp_call_tool("coolify", "get_application", {"uuid": "<uuid>"})
-```
-
-Check that:
-- `status` is `running:healthy`
-- `fqdn` is `https://dumavena.com`
-- `git_repository` is `knezdusan/dumavena-next`
-- `git_branch` is `main`
 
 ---
 
-## Phase 4: Domain Transfer from DigitalOcean to Hetzner
+## Phase 3: Migrate dumavena.com DNS to Hetzner
 
-This is the most critical step — it makes `https://dumavena.com` point to the
-new Next.js site on Hetzner instead of the old Laravel site on DigitalOcean.
+> **Why this comes before deployment:** Coolify's Traefik needs the domain to
+> resolve to the VPS before it can provision an SSL certificate via Let's
+> Encrypt HTTP-01 challenge. If you deploy the app first without DNS pointing
+> to the VPS, the certificate provisioning will fail.
 
-### Current DNS state
+This phase makes `dumavena.com` (and `www.dumavena.com` and
+`admin.dumavena.com`) point to the Hetzner VPS. The old Laravel site on
+DigitalOcean will stop being served for these domains once DNS propagates.
 
-- **dumavena.com NS:** `ns1/2/3.digitalocean.com` (DigitalOcean DNS)
-- **dumavena.com A record:** `157.245.210.218` (DigitalOcean droplet)
-- **Target:** Point `dumavena.com` to `157.180.68.189` (Hetzner VPS)
+### 3.1 Choose DNS approach
 
-### Two approaches (choose one)
+#### Option A: Keep DigitalOcean DNS, change A records (simplest, fastest)
 
-#### Option A: Keep DigitalOcean DNS, change A record (simplest, fastest)
-
-This is the quickest path — just update the A record in the DigitalOcean DNS
-dashboard to point to the Hetzner VPS IP.
+Just update the A records in the DigitalOcean DNS dashboard to point to the
+Hetzner VPS IP.
 
 **Steps:**
-1. Log in to DigitalOcean dashboard → **Networking** → **Domains** → `dumavena.com`
-2. Find the **A record** for `dumavena.com` (and `www.dumavena.com`)
+1. Log in to DigitalOcean dashboard → **Networking** → **Domains** →
+   `dumavena.com`
+2. Find the **A record** for `dumavena.com` (the root domain)
 3. Change the IP from `157.245.210.218` → `157.180.68.189`
-4. Save
-5. Wait for DNS propagation (usually 5-30 minutes for DigitalOcean's TTL;
+4. Find the **A record** for `www.dumavena.com` (if it exists)
+5. Change the IP from `157.245.210.218` → `157.180.68.189`
+6. **Add a new A record:** `admin.dumavena.com` → `157.180.68.189`
+   (This is for the Coolify dashboard migration in Phase 5)
+7. Save
+8. Wait for DNS propagation (usually 5-30 minutes for DigitalOcean's TTL;
    up to 48 hours globally)
-6. Verify: `dig dumavena.com A` should return `157.180.68.189`
+9. Verify: `dig dumavena.com A` should return `157.180.68.189`
+10. Verify: `dig admin.dumavena.com A` should return `157.180.68.189`
 
-**Pros:** Simple, no NS migration, no downtime risk
+**Pros:** Simple, no NS migration, fastest propagation
 **Cons:** DNS stays on DigitalOcean (not consolidated with Cloudflare where
-vectormatch.dev lives)
+vectormatch.dev lives); no CDN/DDoS protection
 
 #### Option B: Migrate DNS to Cloudflare (recommended for consistency)
 
@@ -715,12 +754,15 @@ This consolidates all domains under Cloudflare, matching how
    - Log in to Cloudflare dashboard
    - Click **"Add a site"** → enter `dumavena.com`
    - Select the **Free plan** (or Pro if desired)
-   - Cloudflare will scan existing DNS records — verify the A record for
-     `dumavena.com` points to `157.180.68.189` (change it from the
-     DigitalOcean IP)
-   - Also add/verify: `www.dumavena.com` → `157.180.68.189` (A record,
-     proxied)
-   - Cloudflare will assign nameservers (e.g., `xxx.ns.cloudflare.com`)
+   - Cloudflare will scan existing DNS records — review them
+   - **Set/verify these A records** (all pointing to Hetzner VPS):
+     ```
+     dumavena.com         A  157.180.68.189  (proxied = orange cloud)
+     www.dumavena.com     A  157.180.68.189  (proxied = orange cloud)
+     admin.dumavena.com   A  157.180.68.189  (proxied = orange cloud)
+     ```
+   - Cloudflare will assign nameservers (e.g., `xxx.ns.cloudflare.com` and
+     `yyy.ns.cloudflare.com`)
 
 2. **At the domain registrar:**
    - Change the nameservers for `dumavena.com` from
@@ -739,30 +781,454 @@ This consolidates all domains under Cloudflare, matching how
 
 5. **Verify:**
    - `dig dumavena.com NS` should show Cloudflare nameservers
-   - `dig dumavena.com A` should show Cloudflare proxy IPs
-   - `https://dumavena.com` should load the new Next.js site
+   - `dig dumavena.com A` should show Cloudflare proxy IPs (not the raw VPS IP
+     — this is expected with Cloudflare proxy enabled)
+   - `dig admin.dumavena.com A` should show Cloudflare proxy IPs
 
 **Pros:** Consolidated DNS management, CDN, DDoS protection, matches
 vectormatch.dev setup
 **Cons:** Longer migration time (NS propagation), more steps
 
-### 4.1 Important: Resend domain verification
+### 3.2 DNS records summary (regardless of option chosen)
 
-If using `noreply@dumavena.com` as the sender (not the testing
-`onboarding@resend.dev`), the domain `dumavena.com` must be verified in
-Resend. This requires adding DNS records (SPF, DKIM, DMARC) to the domain's
-DNS.
+| Record | Type | Value | Purpose |
+|---|---|---|---|
+| `dumavena.com` | A | `157.180.68.189` | Main website |
+| `www.dumavena.com` | A | `157.180.68.189` | WWW redirect to main |
+| `admin.dumavena.com` | A | `157.180.68.189` | Coolify dashboard (Phase 5) |
 
-**After DNS migration is complete:**
-1. Log in to Resend → **Domains** → **Add Domain** → `dumavena.com`
-2. Resend will provide DNS records to add (TXT, CNAME records for SPF/DKIM)
-3. Add these records to the DNS provider (DigitalOcean DNS if Option A,
-   Cloudflare if Option B)
-4. Wait for verification (usually 5-30 minutes)
-5. Update `CONTACT_FROM_EMAIL` in Coolify from
-   `Dumavena <onboarding@resend.dev>` to `Dumavena <noreply@dumavena.com>`
+> **If using Cloudflare (Option B):** All three should be proxied (orange
+> cloud). The `dig` command will show Cloudflare's proxy IPs, not the raw VPS
+> IP — this is correct and expected.
 
-### 4.2 Decommission the old DigitalOcean droplet (optional, after verification)
+### 3.3 Verify DNS propagation before proceeding
+
+```bash
+# Check that dumavena.com resolves to the Hetzner VPS
+dig dumavena.com A
+
+# If using Option A (DigitalOcean DNS), should return: 157.180.68.189
+# If using Option B (Cloudflare), should return Cloudflare proxy IPs
+
+# Check admin subdomain
+dig admin.dumavena.com A
+
+# Check NS (if Option B)
+dig dumavena.com NS
+# Should show Cloudflare nameservers
+```
+
+**Do NOT proceed to Phase 4 until DNS is fully propagated.** Coolify needs the
+domain to resolve to the VPS to provision SSL certificates.
+
+---
+
+## Phase 4: Deploy dumavena-next to Coolify
+
+> **Prerequisite:** Phase 3 is complete — `dumavena.com` DNS is pointing to
+> the Hetzner VPS and propagation is verified.
+>
+> **Note:** The Coolify dashboard is still accessible at
+> `https://admin.vectormatch.dev` at this point. The dashboard migration
+> happens in Phase 5, after dumavena-next is deployed and verified.
+
+### 4.1 Create a new Coolify project (recommended)
+
+For cleanliness, create a separate Coolify project for Dumavena (rather than
+adding it to the VectorMatch project). This can be done via the Coolify
+dashboard:
+
+1. Log in to `https://admin.vectormatch.dev`
+2. Click **"New Project"** → Name it **"Dumavena"** → Create
+
+Alternatively, the Dumavena app can be added to the existing "VectorMatch"
+project. The choice is organizational — Coolify projects are just groupings.
+
+### 4.2 Create a new application in Coolify
+
+1. In the Coolify dashboard, go to the project (new "Dumavena" or existing
+   "VectorMatch")
+2. Click **"New Resource"** → **"Dockerfile"** (or "GitHub Repository" if
+   Coolify has GitHub integration set up)
+3. **If using GitHub integration:**
+   - Select repository: `knezdusan/dumavena-next`
+   - Branch: `main`
+   - Build Pack: **Dockerfile**
+   - Dockerfile location: `/Dockerfile`
+   - Port exposes: `3000`
+4. **If using manual Dockerfile:**
+   - Connect the GitHub repo or paste the Dockerfile content
+   - Set the same settings as above
+
+### 4.3 Configure the application
+
+Set the following in the Coolify application settings:
+
+| Setting | Value |
+|---|---|
+| **Name** | `dumavena:main` (or similar) |
+| **FQDN** | `https://dumavena.com` |
+| **Build Pack** | `Dockerfile` |
+| **Dockerfile location** | `/Dockerfile` |
+| **Port exposes** | `3000` |
+| **Base directory** | `/` |
+| **Health check path** | `/` |
+| **Health check port** | `3000` |
+| **Health check method** | `GET` |
+| **Health check return code** | `200` |
+| **Health check scheme** | `http` |
+| **Health check enabled** | `true` |
+| **Redirect** | `both` (HTTP → HTTPS, www → non-www) |
+
+### 4.4 Set environment variables in Coolify
+
+In the Coolify application's **"Environment Variables"** tab, add:
+
+```
+RESEND_API_KEY=<the actual key from the local .env file>
+CONTACT_FROM_EMAIL=Dumavena <onboarding@resend.dev>
+CONTACT_TO_EMAIL=info@dumavena.com
+```
+
+> **Note on `CONTACT_FROM_EMAIL`:** Use the Resend testing sender
+> (`onboarding@resend.dev`) initially, because `dumavena.com` is not yet
+> verified in Resend. After Phase 7 (Resend domain verification), switch to
+> `Dumavena <noreply@dumavena.com>`.
+
+### 4.4a Also add the www domain
+
+In the Coolify application's FQDN field, add both domains (comma-separated):
+```
+https://dumavena.com,https://www.dumavena.com
+```
+
+This tells Traefik to route both `dumavena.com` and `www.dumavena.com` to the
+same container. The `redirect: both` setting will handle www → non-www
+redirection automatically.
+
+### 4.5 Deploy
+
+1. Click **"Deploy"** in the Coolify dashboard
+2. Watch the build logs — the Docker build should complete in 1-3 minutes
+3. Once deployed, Coolify's Traefik proxy will automatically:
+   - Route `dumavena.com` traffic to the container on port 3000
+   - Provision a Let's Encrypt SSL certificate (via HTTP-01 challenge — works
+     because DNS is already pointing to the VPS from Phase 3)
+   - Route `www.dumavena.com` traffic and redirect to `dumavena.com`
+4. The health check should pass within 30 seconds
+
+### 4.6 Verify the deployment
+
+```bash
+# Check that the site loads over HTTPS
+curl -I https://dumavena.com
+
+# Check www redirect
+curl -I https://www.dumavena.com
+# Should return a 301/302 redirect to https://dumavena.com
+
+# Check HTTP → HTTPS redirect
+curl -I http://dumavena.com
+# Should return a 301 redirect to https://dumavena.com
+```
+
+### 4.7 Verify via Coolify MCP
+
+The Devin agent can verify the deployment status using the Coolify MCP server:
+
+```
+# List all applications to find the new dumavena app
+mcp_call_tool("coolify", "list_applications", {})
+
+# Get details of the new application (use the UUID from the list)
+mcp_call_tool("coolify", "get_application", {"uuid": "<uuid>"})
+```
+
+Check that:
+- `status` is `running:healthy`
+- `fqdn` is `https://dumavena.com,https://www.dumavena.com`
+- `git_repository` is `knezdusan/dumavena-next`
+- `git_branch` is `main`
+
+### 4.8 Functional verification
+
+- [ ] `https://dumavena.com` loads the homepage (hero, services, portfolio)
+- [ ] `https://dumavena.com/about` loads
+- [ ] `https://dumavena.com/faq` loads
+- [ ] `https://dumavena.com/privacy-policy` loads
+- [ ] `https://dumavena.com/terms-of-services` loads
+- [ ] SSL certificate is valid (no browser warnings)
+- [ ] `https://www.dumavena.com` redirects to `https://dumavena.com`
+- [ ] HTTP redirects to HTTPS
+- [ ] Fonts load correctly (Fraunces + Geist)
+- [ ] Images load from `/images/` path
+- [ ] Metadata is correct (view page source — title, description, OpenGraph)
+- [ ] Coolify dashboard shows the app as `running:healthy`
+
+**Do NOT proceed to Phase 5 until dumavena.com is fully verified and working.**
+The Coolify dashboard migration in Phase 5 will briefly interrupt dashboard
+access, so we want the dumavena-next app to be stable first.
+
+---
+
+## Phase 5: Migrate Coolify Dashboard to admin.dumavena.com
+
+> **Prerequisite:** Phase 4 is complete — dumavena-next is deployed, healthy,
+> and accessible at `https://dumavena.com`.
+>
+> **Prerequisite:** `admin.dumavena.com` DNS is pointing to the Hetzner VPS
+> (set in Phase 3).
+>
+> **What this phase does:** Moves the Coolify admin dashboard from
+> `admin.vectormatch.dev` to `admin.dumavena.com`. This makes Coolify
+> domain-agnostic — bound to the primary identity domain (dumavena.com)
+> rather than a specific app domain (vectormatch.dev).
+>
+> **Risk to vectormatch.dev:** **Zero.** The VectorMatch app's Traefik routing
+> is defined by Docker container labels, not by the dashboard's dynamic config
+> file. Changing the dashboard FQDN only rewrites `coolify.yaml` (the dashboard
+> routing file). The VectorMatch container's labels are untouched.
+>
+> **Downtime:** Brief (seconds to ~1 minute) for the Coolify dashboard only,
+> while Traefik reloads and the new SSL cert is provisioned. Existing apps
+> (vectormatch.dev, dumavena.com) keep serving without interruption.
+
+### 5.1 Pre-migration checklist
+
+Before changing the FQDN, verify:
+
+- [ ] `dig admin.dumavena.com A` returns the VPS IP (or Cloudflare proxy IPs)
+- [ ] `https://dumavena.com` is live and healthy (Phase 4 verified)
+- [ ] `https://vectormatch.dev` is live and healthy
+- [ ] You have SSH access to the VPS (`ssh vectormatch-vps`) as a fallback
+- [ ] You know the VPS IP for emergency dashboard access:
+      `http://157.180.68.189:8000`
+
+### 5.2 Change the Coolify FQDN
+
+1. Log in to the Coolify dashboard at `https://admin.vectormatch.dev`
+2. Go to **Settings** → **Instance Settings** (or look for "Instance FQDN"
+   in the settings page)
+3. Find the **FQDN** field (currently set to `https://admin.vectormatch.dev`)
+4. Change it to: `https://admin.dumavena.com`
+5. **Save**
+
+### 5.3 What Coolify does automatically (no manual action needed)
+
+When you save the new FQDN, Coolify will:
+
+1. **Update `instance_settings.fqdn`** in the database
+2. **Regenerate `/data/coolify/proxy/dynamic/coolify.yaml`** with
+   `Host(\`admin.dumavena.com\`)` rules (replacing all 6 occurrences of
+   `admin.vectormatch.dev`)
+3. **Traefik detects the file change** (file watcher) and reloads its config
+4. **Provision a new Let's Encrypt SSL certificate** for `admin.dumavena.com`
+   via HTTP-01 challenge (works because DNS is already pointing to the VPS)
+5. **Update the `COOLIFY_BASE_URL` environment variable** on all applications
+   (currently only the VectorMatch app has this var) to
+   `https://admin.dumavena.com`
+
+Steps 1-3 happen in seconds. Step 4 (cert provisioning) takes 5-30 seconds.
+During this brief window, the dashboard may be inaccessible. Existing apps
+are unaffected.
+
+### 5.4 Verify the new dashboard URL
+
+```bash
+# Wait ~30 seconds after saving, then:
+curl -I https://admin.dumavena.com
+# Should return 200 OK with a valid SSL certificate
+
+# Try loading it in a browser — should show the Coolify login/dashboard
+```
+
+If it doesn't work immediately, wait 1-2 minutes for cert provisioning and
+try again. If it still doesn't work after 5 minutes, see Troubleshooting
+(Appendix C).
+
+### 5.5 Verify vectormatch.dev is still working
+
+```bash
+curl -I https://vectormatch.dev
+# Should still return 200 OK — this app is unaffected by the dashboard migration
+```
+
+### 5.6 Verify dumavena.com is still working
+
+```bash
+curl -I https://dumavena.com
+# Should still return 200 OK
+```
+
+### 5.7 Verify the old admin URL is no longer routing
+
+```bash
+curl -I https://admin.vectormatch.dev
+# Should NOT return the Coolify dashboard anymore.
+# It may return a 503 (default_redirect_503.yaml catchall) or a connection
+# error — this is expected and correct.
+```
+
+> **Note:** The `admin.vectormatch.dev` subdomain DNS still points to the VPS
+> (via Cloudflare), but Traefik no longer has a routing rule for it. The
+> catchall rule in `default_redirect_503.yaml` will return a 503 for any
+> unrecognized host. This is expected behavior.
+
+### 5.8 Update local Devin MCP configs
+
+Two files on the local Mac need to be updated with the new Coolify URL:
+
+**File 1:** `/Users/knez/Documents/WebDev/vectormatch/.devin/mcp_config.local.json`
+
+Change the `url` from `https://admin.vectormatch.dev/mcp` to
+`https://admin.dumavena.com/mcp`:
+
+```json
+{
+  "mcpServers": {
+    "coolify": {
+      "url": "https://admin.dumavena.com/mcp",
+      "transport": "http",
+      "headers": {
+        "Authorization": "Bearer 1|CjgLBfyxjp8dDxmtT6Rkjyl3YBGFsFZNNpWAraVcfd8e9e21"
+      }
+    }
+  }
+}
+```
+
+**File 2:** `~/.config/devin/mcp_config.json`
+
+Change the `url` from `https://admin.vectormatch.dev/mcp` to
+`https://admin.dumavena.com/mcp`:
+
+```json
+{
+  "mcpServers": {
+    "coolify": {
+      "url": "https://admin.dumavena.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${file:~/.config/coolify/mcp_token}"
+      }
+    }
+  }
+}
+```
+
+> **Note:** The MCP token stays the same — it's tied to the Coolify instance,
+> not the URL.
+
+**File 3:** `/Users/knez/Documents/WebDev/dumavena/dumavena-next/.devin/mcp_config.local.json`
+
+If this file was created in Phase 1 with the old URL, update it too:
+
+```json
+{
+  "mcpServers": {
+    "coolify": {
+      "url": "https://admin.dumavena.com/mcp",
+      "transport": "http",
+      "headers": {
+        "Authorization": "Bearer 1|CjgLBfyxjp8dDxmtT6Rkjyl3YBGFsFZNNpWAraVcfd8e9e21"
+      }
+    }
+  }
+}
+```
+
+### 5.9 Update the AGENTS.md references
+
+If the `AGENTS.md` created in Phase 1.3 references `https://admin.vectormatch.dev`
+as the Coolify dashboard URL, update it to `https://admin.dumavena.com`.
+
+### 5.10 Post-migration verification summary
+
+| URL | Expected result | Status |
+|---|---|---|
+| `https://admin.dumavena.com` | Coolify dashboard loads | [ ] |
+| `https://vectormatch.dev` | VectorMatch app loads | [ ] |
+| `https://dumavena.com` | Dumavena Next.js site loads | [ ] |
+| `https://www.dumavena.com` | Redirects to `https://dumavena.com` | [ ] |
+| `https://admin.vectormatch.dev` | 503 or no response (expected) | [ ] |
+| Coolify MCP via Devin | `get_infrastructure_overview` works | [ ] |
+
+---
+
+## Phase 6: Post-Deployment Verification
+
+After all phases are complete, do a final end-to-end verification of both
+domains and the Coolify dashboard.
+
+### 6.1 vectormatch.dev (existing app — must be unaffected)
+
+- [ ] `https://vectormatch.dev` loads the VectorMatch homepage
+- [ ] SSL certificate is valid
+- [ ] Login/auth flows work (if applicable)
+- [ ] No errors in browser console
+- [ ] Coolify dashboard shows vectormatch app as `running:healthy`
+
+### 6.2 dumavena.com (new app)
+
+- [ ] `https://dumavena.com` loads the homepage
+- [ ] `https://dumavena.com/about` loads
+- [ ] `https://dumavena.com/faq` loads
+- [ ] `https://dumavena.com/privacy-policy` loads
+- [ ] `https://dumavena.com/terms-of-services` loads
+- [ ] SSL certificate is valid (no browser warnings)
+- [ ] `https://www.dumavena.com` redirects to `https://dumavena.com`
+- [ ] HTTP redirects to HTTPS
+- [ ] Fonts load correctly (Fraunces + Geist)
+- [ ] Images load from `/images/` path
+- [ ] Metadata is correct (view page source — title, description, OpenGraph)
+- [ ] Coolify dashboard shows dumavena app as `running:healthy`
+
+### 6.3 Coolify dashboard (new URL)
+
+- [ ] `https://admin.dumavena.com` loads the Coolify login page
+- [ ] Can log in with existing credentials
+- [ ] Both applications visible in the dashboard
+- [ ] Both applications show `running:healthy`
+- [ ] Coolify MCP works from Devin (call `get_infrastructure_overview`)
+
+### 6.4 Contact form (dumavena.com)
+
+- [ ] Submit the contact form with valid data → success message appears
+- [ ] Email is received at `info@dumavena.com` (if Resend is configured with
+      the testing sender — check the Resend dashboard for delivery logs)
+- [ ] Submit with empty fields → validation errors appear
+- [ ] Submit with invalid email → validation error appears
+- [ ] Submit 4 times rapidly → rate limit message appears (3 per 10 min)
+
+---
+
+## Phase 7: Resend Domain Verification & Cleanup
+
+### 7.1 Verify dumavena.com in Resend
+
+To use `noreply@dumavena.com` as the sender (instead of the testing
+`onboarding@resend.dev`), the domain must be verified in Resend.
+
+**Steps:**
+1. Log in to Resend → **Domains** → **Add Domain** → enter `dumavena.com`
+2. Resend will provide DNS records to add (typically):
+   - **SPF** (TXT record)
+   - **DKIM** (CNAME or TXT records)
+   - **DMARC** (TXT record, optional but recommended)
+3. Add these records to the DNS provider:
+   - If Option A (DigitalOcean DNS): add in DigitalOcean dashboard
+   - If Option B (Cloudflare): add in Cloudflare dashboard
+4. Wait for verification (usually 5-30 minutes — Resend will show "Verified"
+   when the DNS records propagate)
+5. In the Coolify dashboard, update the dumavena-next app's environment
+   variable:
+   ```
+   CONTACT_FROM_EMAIL=Dumavena <noreply@dumavena.com>
+   ```
+   (was previously `Dumavena <onboarding@resend.dev>`)
+6. Redeploy the dumavena-next app (or restart it) for the env var to take
+   effect
+
+### 7.2 Decommission the old DigitalOcean droplet (optional)
 
 **Only after confirming the new site is fully working:**
 1. Verify `https://dumavena.com` loads the Next.js site (not Laravel)
@@ -774,57 +1240,27 @@ DNS.
 > **Do NOT destroy the DigitalOcean droplet until the user explicitly
 > confirms the new site is working and they want the old one removed.**
 
----
+### 7.3 Clean up the old admin.vectormatch.dev DNS record (optional)
 
-## Phase 5: Post-Deployment Verification
-
-After the domain is pointing to Hetzner and the Coolify app is running:
-
-### 5.1 Functional checks
-
-- [ ] `https://dumavena.com` loads the homepage
-- [ ] `https://dumavena.com/about` loads
-- [ ] `https://dumavena.com/faq` loads
-- [ ] `https://dumavena.com/privacy-policy` loads
-- [ ] `https://dumavena.com/terms-of-services` loads
-- [ ] SSL certificate is valid (no browser warnings)
-- [ ] `https://www.dumavena.com` redirects to `https://dumavena.com` (or
-      vice versa, depending on Coolify redirect setting)
-- [ ] HTTP redirects to HTTPS
-
-### 5.2 Contact form check
-
-- [ ] Submit the contact form with valid data → success message appears
-- [ ] Email is received at `info@dumavena.com`
-- [ ] Submit with empty fields → validation errors appear
-- [ ] Submit with invalid email → validation error appears
-- [ ] Submit 4 times rapidly → rate limit message appears (3 per 10 min)
-
-### 5.3 Performance and SEO checks
-
-- [ ] Page load is fast (no obvious delays)
-- [ ] Fonts load correctly (Fraunces + Geist)
-- [ ] Images load from `/images/` path
-- [ ] Metadata is correct (view page source — title, description, OpenGraph)
-- [ ] `robots.txt` and `sitemap.xml` if applicable
-
-### 5.4 Coolify health check
-
-- [ ] Coolify dashboard shows the dumavena app as `running:healthy`
-- [ ] Health check is passing (green indicator)
+After confirming `admin.dumavena.com` is working as the Coolify dashboard, you
+can optionally remove the `admin.vectormatch.dev` DNS record from Cloudflare
+(since nothing is serving it anymore). Or leave it — it's harmless and could
+serve as a fallback if you ever need to temporarily revert.
 
 ---
 
-## Reference: VectorMatch Coolify Application Config
+## Appendix A: Reference Configs
+
+### A.1 VectorMatch Coolify Application Config (reference)
 
 The existing VectorMatch application on Coolify serves as a reference for how
-a Next.js app is configured. Here are its key settings:
+a Next.js app is configured:
 
 | Setting | VectorMatch Value | Dumavena Target Value |
 |---|---|---|
 | UUID | `o13urtthlj1q3md70gqeuca2` | (new UUID) |
 | Name | `vectormatch:main-o13urtthlj1q3md70gqeuca2` | `dumavena:main` |
-| FQDN | `https://vectormatch.dev` | `https://dumavena.com` |
+| FQDN | `https://vectormatch.dev` | `https://dumavena.com,https://www.dumavena.com` |
 | Git repository | `knezdusan/vectormatch` | `knezdusan/dumavena-next` |
 | Git branch | `main` | `main` |
 | Build pack | `dockerfile` | `dockerfile` |
@@ -841,16 +1277,45 @@ a Next.js app is configured. Here are its key settings:
 > 200 on the homepage. If desired, a dedicated `/api/health` route can be
 > added later, but the root path works fine for a simple portfolio site.
 
+### A.2 Coolify instance settings (current vs target)
+
+| Setting | Current value | Target value (after Phase 5) |
+|---|---|---|
+| `instance_settings.fqdn` | `https://admin.vectormatch.dev` | `https://admin.dumavena.com` |
+| `instance_settings.instance_name` | `VectorMatch - Coolify` | `Dumavena - Coolify` (optional) |
+| `instance_settings.public_ipv4` | `157.180.68.189` | (unchanged) |
+| `instance_settings.public_ipv6` | `2a01:4f9:c013:2d1f::1` | (unchanged) |
+| `instance_settings.is_mcp_server_enabled` | `true` | (unchanged) |
+
+### A.3 Traefik dynamic config (auto-generated)
+
+The file `/data/coolify/proxy/dynamic/coolify.yaml` is auto-generated by
+Coolify. After the Phase 5 migration, it will contain `Host(\`admin.dumavena.com\`)`
+instead of `Host(\`admin.vectormatch.dev\`)`. **Never edit this file manually**
+— Coolify will overwrite it. Always change the FQDN via the dashboard.
+
+### A.4 SSH access to VPS
+
+```bash
+# Standard SSH (with port forwarding for Postgres tunnel)
+ssh vectormatch-vps
+
+# SSH without port forwarding (faster for general commands)
+ssh -o ClearAllForwardings=yes vectormatch-vps
+
+# Emergency Coolify access (if dashboard domain is broken)
+# Coolify's internal HTTP port is 8000, accessible on the VPS directly
+ssh -L 8000:localhost:8000 vectormatch-vps
+# Then open http://localhost:8000 in browser
+```
+
 ---
 
-## Quick Reference: All Commands
+## Appendix B: Quick Command Reference
 
 ```bash
 # === Phase 1: Local AI setup ===
-# Create .devin directory structure
 mkdir -p .devin/skills
-
-# Copy relevant skills from VectorMatch
 cp -r /Users/knez/Documents/WebDev/vectormatch/.devin/skills/next-best-practices .devin/skills/
 cp -r /Users/knez/Documents/WebDev/vectormatch/.devin/skills/next-cache-components .devin/skills/
 cp -r /Users/knez/Documents/WebDev/vectormatch/.devin/skills/shadcn .devin/skills/
@@ -859,22 +1324,134 @@ cp -r /Users/knez/Documents/WebDev/vectormatch/.devin/skills/playwright-e2e .dev
 cp -r /Users/knez/Documents/WebDev/vectormatch/.devin/skills/fallow .devin/skills/
 
 # === Phase 2: Docker build verification ===
-# Build and test locally
 docker build -t dumavena-next .
 docker run -p 3001:3000 --env-file .env dumavena-next
 # Open http://localhost:3001
 
-# === Phase 3: Coolify (via dashboard at https://admin.vectormatch.dev) ===
-# Create app → set FQDN, build pack, env vars → deploy
-
-# === Phase 4: DNS ===
-# Option A: DigitalOcean DNS — change A record to 157.180.68.189
-# Option B: Cloudflare — add domain, change NS, set A record to 157.180.68.189
-
-# === Phase 5: Verify ===
+# === Phase 3: DNS verification ===
 dig dumavena.com A
+dig www.dumavena.com A
+dig admin.dumavena.com A
+dig dumavena.com NS  # if using Cloudflare
+
+# === Phase 4: Deployment verification ===
 curl -I https://dumavena.com
+curl -I https://www.dumavena.com  # should redirect
+curl -I http://dumavena.com       # should redirect to HTTPS
+
+# === Phase 5: Coolify dashboard migration verification ===
+curl -I https://admin.dumavena.com   # should return 200
+curl -I https://admin.vectormatch.dev # should return 503 or no response
+curl -I https://vectormatch.dev       # should still return 200
+
+# === Phase 6: Final verification ===
+# Via Coolify MCP (Devin):
+#   mcp_call_tool("coolify", "get_infrastructure_overview", {})
+#   mcp_call_tool("coolify", "list_applications", {})
+
+# === SSH to VPS (emergency/fallback) ===
+ssh vectormatch-vps
+ssh -L 8000:localhost:8000 vectormatch-vps  # emergency Coolify access
+
+# === Check running containers on VPS ===
+ssh vectormatch-vps "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"
 ```
+
+---
+
+## Appendix C: Troubleshooting
+
+### C.1 Coolify dashboard not loading at admin.dumavena.com after migration
+
+**Symptom:** `https://admin.dumavena.com` returns a 503, timeout, or SSL error
+after changing the FQDN in Coolify settings.
+
+**Possible causes and fixes:**
+
+1. **DNS not propagated:** Verify `dig admin.dumavena.com A` returns the VPS
+   IP (or Cloudflare IPs if proxied). If not, wait for DNS propagation.
+
+2. **SSL cert not yet provisioned:** Let's Encrypt HTTP-01 challenge can take
+   up to 60 seconds. Wait 2-3 minutes and retry.
+
+3. **Cloudflare proxy interfering with HTTP-01 challenge:** If using
+   Cloudflare (Option B), the proxy might intercept the HTTP-01 challenge.
+   Temporarily set the `admin.dumavena.com` record to **DNS only** (grey cloud)
+   in Cloudflare, let the cert provision, then re-enable proxying.
+
+4. **Traefik didn't reload:** SSH to the VPS and check:
+   ```bash
+   ssh vectormatch-vps
+   cat /data/coolify/proxy/dynamic/coolify.yaml | grep Host
+   # Should show admin.dumavena.com, not admin.vectormatch.dev
+   docker logs coolify-proxy --tail 20
+   ```
+   If the file still shows the old domain, try restarting Traefik:
+   ```bash
+   docker restart coolify-proxy
+   ```
+
+5. **Emergency access:** If the dashboard is completely broken, access it via
+   the VPS IP directly:
+   ```bash
+   ssh -L 8000:localhost:8000 vectormatch-vps
+   # Open http://localhost:8000 in browser
+   ```
+   You can then fix the FQDN setting from there.
+
+### C.2 vectormatch.dev stopped working after dashboard migration
+
+**This should not happen** — the VectorMatch app's routing is on its container
+labels, not in the dashboard config file. But if it does:
+
+1. Check the VectorMatch container is still running:
+   ```bash
+   ssh vectormatch-vps "docker ps | grep o13urtthlj1q3md70gqeuca2"
+   ```
+2. Check Traefik can see the container's labels:
+   ```bash
+   ssh vectormatch-vps "docker inspect o13urtthlj1q3md70gqeuca2-183141871638 --format '{{json .Config.Labels}}'" | grep vectormatch.dev
+   ```
+3. Restart the VectorMatch app from the Coolify dashboard (if accessible) or
+   via Docker:
+   ```bash
+   ssh vectormatch-vps "docker restart o13urtthlj1q3md70gqeuca2-183141871638"
+   ```
+
+### C.3 dumavena.com SSL certificate fails to provision
+
+**Symptom:** The dumavena-next app deploys but HTTPS doesn't work (browser
+shows cert error).
+
+**Fix:** Ensure DNS is pointing to the VPS before deploying. If using
+Cloudflare, temporarily disable proxying (grey cloud) for `dumavena.com` while
+the cert provisions, then re-enable it.
+
+### C.4 Contact form not sending email
+
+**Symptom:** Contact form returns an error message.
+
+**Check:**
+1. `RESEND_API_KEY` is set correctly in Coolify env vars
+2. `CONTACT_FROM_EMAIL` uses a verified sender (`onboarding@resend.dev` works
+   without domain verification; `noreply@dumavena.com` requires Phase 7)
+3. Check the Resend dashboard for delivery logs
+4. Check container logs:
+   ```bash
+   ssh vectormatch-vps "docker logs <dumavena-container-name> --tail 50"
+   ```
+
+### C.5 Reverting the Coolify dashboard migration
+
+If something goes wrong and you need to revert to `admin.vectormatch.dev`:
+
+1. Access Coolify via emergency IP: `ssh -L 8000:localhost:8000 vectormatch-vps`
+   → open `http://localhost:8000`
+2. Go to Settings → Instance Settings → change FQDN back to
+   `https://admin.vectormatch.dev`
+3. Save — Coolify will regenerate the Traefik config and re-provision the old
+   cert
+4. Update the local Devin MCP configs back to `admin.vectormatch.dev`
 
 ---
 
@@ -887,14 +1464,28 @@ curl -I https://dumavena.com
 5. **Update `next.config.ts`** to add `output: "standalone"` (Phase 2.1).
 6. **Verify the Docker build locally** (Phase 2.4).
 7. **Remind the user to commit and push** the new files to GitHub (Phase 2.5).
-8. **Guide the user through Coolify dashboard setup** (Phase 3) — the agent
+8. **Guide the user through DNS migration** (Phase 3) — this is a manual step
+   the user performs in the DigitalOcean/Cloudflare dashboard. Verify DNS
+   propagation before proceeding.
+9. **Guide the user through Coolify dashboard setup** (Phase 4) — the agent
    can use the Coolify MCP to verify deployment status but cannot create
    applications (the MCP is read-only).
-9. **Guide the user through DNS migration** (Phase 4) — this is a manual step
-   the user performs in the DigitalOcean/Cloudflare dashboard.
-10. **Verify the deployment** (Phase 5) — the agent can curl the site and
-    check Coolify MCP status.
+10. **Verify dumavena.com is fully working** before proceeding to Phase 5.
+11. **Guide the user through the Coolify dashboard migration** (Phase 5) —
+    changing the FQDN from `admin.vectormatch.dev` to `admin.dumavena.com` in
+    the Coolify settings.
+12. **Update the local Devin MCP config files** with the new Coolify URL
+    (Phase 5.8).
+13. **Run final verification** (Phase 6) — verify both domains and the
+    dashboard are working.
+14. **Guide the user through Resend domain verification** (Phase 7) —
+    optional but recommended for production email delivery.
 
 > **Reminder:** The Devin agent must NEVER run git commands. All commits and
 > pushes are the user's responsibility. The agent should prepare the files,
 > verify the build, and tell the user what to commit and push.
+
+> **Ordering is critical:** The phases must be executed in order. DNS must
+> propagate (Phase 3) before deployment (Phase 4). Deployment must be verified
+> (Phase 4) before the dashboard migration (Phase 5). Skipping ahead or
+> reordering can cause SSL cert failures or dashboard downtime.

@@ -62,7 +62,7 @@ confirmation. This includes:
 - **Build pack:** Dockerfile (see `Dockerfile` in repo root)
 - **Port:** 3000
 - **Domain:** `https://dumavena.com`
-- **Coolify dashboard:** `https://admin.vectormatch.dev`
+- **Coolify dashboard:** `https://admin.dumavena.com`
 - **Coolify MCP:** Available via `.devin/mcp_config.local.json` for read-only
   infrastructure queries (list applications, check status, etc.)
 

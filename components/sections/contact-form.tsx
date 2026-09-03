@@ -70,7 +70,7 @@ export function ContactForm() {
       noValidate
     >
       {/* Honeypot field — hidden from users, catches bots */}
-      <div className="absolute -left-[9999px]" aria-hidden="true">
+      <div className="absolute left-[-9999px]" aria-hidden="true">
         <label htmlFor="company">Company (leave empty)</label>
         <input
           type="text"

@@ -53,7 +53,7 @@ function ServiceRow({
       className="grid scroll-mt-24 items-center gap-8 md:grid-cols-2 md:gap-16"
     >
       <div className={isReversed ? "md:order-2" : ""}>
-        <div className="relative aspect-[4/3] rounded-2xl overflow-hidden bg-(--color-surface) edge-light">
+        <div className="relative aspect-4/3 rounded-2xl overflow-hidden bg-(--color-surface) edge-light">
           <Image
             src={service.image}
             alt={service.title}
@@ -72,7 +72,7 @@ function ServiceRow({
               {String(index + 1).padStart(2, "0")}
             </span>
           </div>
-          <div className="absolute bottom-0 left-0 right-0 p-6 border-t border-(--color-border) bg-(--color-surface)/80 backdrop-blur-sm">
+          <div className="absolute bottom-0 left-0 right-0 p-6 border-t border-(--color-border) bg-surface/80 backdrop-blur-sm">
             <span className="text-xs uppercase tracking-wider text-(--color-text-muted)">
               {service.priceLabel}
             </span>
