@@ -44,7 +44,7 @@ export function Hero() {
 						>
 							<span className="w-1.5 h-1.5 rounded-full bg-(--color-accent) animate-pulse" />
 							<span className="text-xs text-(--color-text-secondary) tracking-wide">
-								30% off all services — limited time
+								35% off all services — limited time
 							</span>
 						</motion.div>
 
