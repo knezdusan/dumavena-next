@@ -1,6 +1,6 @@
 # Dumavena — Next.js
 
-Marketing website for [Dumavena LLC](https://dumavena.com), rebuilt from the original
+Portfolio website for [Dumavena LLC](https://dumavena.com), Dusan Knezevic's personal web-dev portfolio, rebuilt from the original
 Laravel/Blade application into a modern Next.js stack.
 
 ## Tech stack
