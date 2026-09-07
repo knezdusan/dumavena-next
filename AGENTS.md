@@ -72,6 +72,8 @@ confirmation. This includes:
 | `RESEND_API_KEY` | Resend API key |
 | `CONTACT_FROM_EMAIL` | Sender address (verified in Resend) |
 | `CONTACT_TO_EMAIL` | Recipient for contact form |
+| `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | Cloudflare Turnstile site key (public, browser-visible) |
+| `TURNSTILE_SECRET_KEY` | Cloudflare Turnstile secret key (server-only) |
 
 ## Resources & References
 - **Next.js 16 docs:** Read `node_modules/next/dist/docs/` before writing code

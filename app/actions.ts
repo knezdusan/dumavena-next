@@ -126,6 +126,50 @@ function pruneRateLimitMap() {
   }
 }
 
+// --- Cloudflare Turnstile verification ---
+// Verifies the challenge token server-side. If TURNSTILE_SECRET_KEY is not
+// set (e.g. local dev without Turnstile configured), verification is skipped
+// so the form remains functional during development.
+type TurnstileVerifyResponse = {
+  success: boolean;
+  "error-codes"?: string[];
+  challenge_ts?: string;
+  hostname?: string;
+};
+
+async function verifyTurnstileToken(
+  token: string,
+  remoteip?: string,
+): Promise<boolean> {
+  const secret = process.env.TURNSTILE_SECRET_KEY;
+  if (!secret) {
+    // No secret configured — skip verification in development
+    return true;
+  }
+
+  try {
+    const body = new URLSearchParams({
+      secret,
+      response: token,
+    });
+    if (remoteip) body.set("remoteip", remoteip);
+
+    const res = await fetch(
+      "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body,
+      },
+    );
+    const data: TurnstileVerifyResponse = await res.json();
+    return data.success === true;
+  } catch (error) {
+    console.error("Turnstile verification failed:", error);
+    return false;
+  }
+}
+
 export async function submitContact(
   _prevState: ContactState,
   formData: FormData,
@@ -147,8 +191,30 @@ export async function submitContact(
     };
   }
 
-  // Rate limit check — after validation so spam bots still waste effort on
-  // invalid input but real users hitting validation errors don't consume quota.
+  // Turnstile verification — before rate limiting so bot traffic is rejected
+  // without consuming rate-limit quota. The token is single-use and must be
+  // verified on every submission.
+  const turnstileToken = formData.get("cf-turnstile-response");
+  if (process.env.TURNSTILE_SECRET_KEY) {
+    if (!turnstileToken || typeof turnstileToken !== "string") {
+      return {
+        success: false,
+        message:
+          "Please complete the verification challenge before submitting.",
+      };
+    }
+    const ip = await getClientIp();
+    const verified = await verifyTurnstileToken(turnstileToken, ip);
+    if (!verified) {
+      return {
+        success: false,
+        message: "Verification failed. Please refresh the page and try again.",
+      };
+    }
+  }
+
+  // Rate limit check — after Turnstile so bots are rejected first, but real
+  // users hitting validation errors don't consume quota.
   pruneRateLimitMap();
   const ip = await getClientIp();
   const { allowed, retryAfterMs } = checkRateLimit(ip);

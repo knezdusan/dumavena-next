@@ -1,5 +1,6 @@
 "use client";
 
+import Script from "next/script";
 import { useActionState, useEffect, useRef } from "react";
 import { type ContactState, submitContact } from "@/app/actions";
 
@@ -8,6 +9,8 @@ const initialState: ContactState = {
   message: "",
 };
 
+const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
+
 export function ContactForm() {
   const [state, formAction, pending] = useActionState(
     submitContact,
@@ -15,6 +18,7 @@ export function ContactForm() {
   );
   const formRef = useRef<HTMLFormElement>(null);
   const successRef = useRef<HTMLDivElement>(null);
+  const turnstileRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (state.success && successRef.current) {
@@ -24,6 +28,20 @@ export function ContactForm() {
       });
     }
   }, [state.success]);
+
+  // Reset Turnstile widget after a failed submission so the user can retry.
+  // The token is single-use — without reset, the next submit sends a stale
+  // token and verification always fails.
+  useEffect(() => {
+    if (!state.success && state.message && TURNSTILE_SITE_KEY) {
+      const widgetId =
+        turnstileRef.current?.querySelector<HTMLDivElement>("iframe")
+          ?.parentElement?.parentElement?.dataset.widgetId;
+      if (widgetId && typeof window !== "undefined" && window.turnstile) {
+        window.turnstile.reset(widgetId);
+      }
+    }
+  }, [state.success, state.message]);
 
   if (state.success) {
     return (
@@ -160,6 +178,24 @@ export function ContactForm() {
         <p className="text-sm text-red-400" role="alert">
           {state.message}
         </p>
+      )}
+
+      {/* Cloudflare Turnstile — invisible/managed challenge for bot protection */}
+      {TURNSTILE_SITE_KEY && (
+        <>
+          <Script
+            src="https://challenges.cloudflare.com/turnstile/v0/api.js"
+            strategy="afterInteractive"
+            async
+            defer
+          />
+          <div
+            ref={turnstileRef}
+            className="cf-turnstile"
+            data-sitekey={TURNSTILE_SITE_KEY}
+            data-theme="dark"
+          />
+        </>
       )}
 
       <button
