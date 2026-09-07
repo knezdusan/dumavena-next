@@ -32,17 +32,6 @@ export function Contact() {
               Tell us about your project and goals. We&apos;ll get back to you
               within 24 hours with next steps and a quote.
             </p>
-            <div className="mt-8 flex flex-col gap-2">
-              <a
-                href={`mailto:${site.email}`}
-                className="text-sm text-(--color-accent) hover:text-(--color-accent-soft) transition-colors"
-              >
-                {site.email}
-              </a>
-              <p className="text-xs text-(--color-text-muted)">
-                Or email us directly if you prefer
-              </p>
-            </div>
           </motion.div>
 
           <motion.div
